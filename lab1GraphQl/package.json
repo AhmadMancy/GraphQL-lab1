@@ -12,8 +12,11 @@
   "description": "Student Management System",
   "dependencies": {
     "apollo-server-express": "^3.13.0",
+    "bcryptjs": "^2.4.3",
     "express": "^4.18.2",
     "graphql": "^16.12.0",
+    "graphql-playground-middleware-express": "^1.7.23",
+    "jsonwebtoken": "^9.0.2",
     "monaco-graphql": "^1.7.2"
   }
 }

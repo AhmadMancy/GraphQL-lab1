@@ -1,303 +1,677 @@
-const express = require("express");
-const { ApolloServer, gql } = require("apollo-server-express");
+const expressFramework = require("express");
+const {
+  ApolloServer: Apollo,
+  gql: graphqlQueryLang,
+} = require("apollo-server-express");
+const graphqlPlayground =
+  require("graphql-playground-middleware-express").default;
+const jsonwebtoken = require("jsonwebtoken");
+const bcryptjs = require("bcryptjs");
 
-let students = [
+const WEB_TOKEN_SECRET = "a-more-secure-secret-key";
+
+let userDatabase = [];
+let userNextId = 1;
+
+let learnerDatabase = [
   {
-    id: "1",
-    name: "Salma Youssef",
-    email: "salma.y@example.com",
+    learnerId: "1",
+    fullName: "Ali Mohamed",
+    contactEmail: "ali@example.com",
     age: 23,
-    major: "Software Engineering",
+    fieldOfStudy: "Software Engineering",
   },
   {
-    id: "2",
-    name: "Karim Adel",
-    email: "karim.a@example.com",
+    learnerId: "2",
+    name: "Sara Ahmed",
+    email: "sara@example.com",
     age: 22,
-    major: "Cybersecurity",
-  },
-  {
-    id: "3",
-    name: "Laila Ibrahim",
-    email: "laila.i@example.com",
-    age: 24,
-    major: "Software Engineering",
-  },
-  {
-    id: "4",
-    name: "Omar Sherif",
-    email: "omar.s@example.com",
-    age: 21,
-    major: "Artificial Intelligence",
+    major: "Data Science",
   },
 ];
+let learnerNextId = 3;
 
-let courses = [
+let subjectDatabase = [
   {
-    id: "101",
-    title: "Web Development Fundamentals",
-    code: "WD101",
-    credits: 4,
-    instructor: "Prof. Nadia",
+    subjectId: "1",
+    subjectName: "Introduction to Algorithms",
+    subjectIdentifier: "CS101",
+    creditHours: 3,
+    educator: "Dr. Ahmed",
   },
   {
-    id: "102",
-    title: "Introduction to AI",
-    code: "AI202",
-    credits: 3,
-    instructor: "Prof. Khaled",
-  },
-  {
-    id: "103",
-    title: "Network Security",
-    code: "CS405",
-    credits: 4,
-    instructor: "Prof. Mona",
-  },
-  {
-    id: "104",
-    title: "Mobile App Development",
-    code: "SE310",
-    credits: 3,
-    instructor: "Prof. Hany",
+    subjectId: "2",
+    subjectName: "Machine Learning",
+    subjectIdentifier: "CS401",
+    creditHours: 4,
+    educator: "Dr. Fatima",
   },
 ];
+let subjectNextId = 3;
 
-let enrollments = {
-  1: ["101", "104"],
-  2: ["103"],
-  3: ["101", "102"],
-  4: ["102"],
+let registrationDatabase = {
+  1: ["1", "2"],
+  2: ["2"],
 };
 
-const typeDefs = gql`
-  type Student {
-    id: ID!
-    name: String!
-    email: String!
-    age: Int!
-    major: String
-    courses: [Course!]!
+function isEmailValid(email) {
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailPattern.test(email);
+}
+
+function ensureAuthenticated(requestContext) {
+  if (!requestContext.currentUser) {
+    throw new Error("AUTHENTICATION_REQUIRED");
+  }
+}
+
+function isUserEmailAvailable(email, currentUserId = null) {
+  return !userDatabase.some(
+    (user) =>
+      user.id !== currentUserId &&
+      user.email.toLowerCase() === email.toLowerCase()
+  );
+}
+
+function isLearnerEmailAvailable(email, currentLearnerId = null) {
+  return !learnerDatabase.some(
+    (learner) =>
+      learner.id !== currentLearnerId &&
+      learner.email.toLowerCase() === email.toLowerCase()
+  );
+}
+
+function isSubjectCodeAvailable(code, currentSubjectId = null) {
+  return !subjectDatabase.some(
+    (subject) =>
+      subject.id !== currentSubjectId &&
+      subject.code.toLowerCase() === code.toLowerCase()
+  );
+}
+
+function filterItems(data, criteria, itemType) {
+  if (!criteria) return data;
+
+  return data.filter((item) => {
+    if (itemType === "learner") {
+      if (
+        criteria.fieldOfStudy &&
+        item.fieldOfStudy?.toLowerCase() !== criteria.fieldOfStudy.toLowerCase()
+      ) {
+        return false;
+      }
+      if (
+        criteria.fullNameContains &&
+        !item.fullName
+          .toLowerCase()
+          .includes(criteria.fullNameContains.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        criteria.emailContains &&
+        !item.contactEmail
+          .toLowerCase()
+          .includes(criteria.emailContains.toLowerCase())
+      ) {
+        return false;
+      }
+      if (criteria.minAge !== undefined && item.age < criteria.minAge) {
+        return false;
+      }
+      if (criteria.maxAge !== undefined && item.age > criteria.maxAge) {
+        return false;
+      }
+    } else if (itemType === "subject") {
+      if (
+        criteria.codeStartsWith &&
+        !item.subjectIdentifier
+          .toLowerCase()
+          .startsWith(criteria.codeStartsWith.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        criteria.subjectNameContains &&
+        !item.subjectName
+          .toLowerCase()
+          .includes(criteria.subjectNameContains.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        criteria.educator &&
+        item.educator.toLowerCase() !== criteria.educator.toLowerCase()
+      ) {
+        return false;
+      }
+      if (
+        criteria.minCredits !== undefined &&
+        item.creditHours < criteria.minCredits
+      ) {
+        return false;
+      }
+      if (
+        criteria.maxCredits !== undefined &&
+        item.creditHours > criteria.maxCredits
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function sortItems(data, sortKey, direction) {
+  if (!sortKey) return data;
+
+  const sortDirection = direction?.toUpperCase() === "DESC" ? -1 : 1;
+
+  return [...data].sort((itemA, itemB) => {
+    const valueA = itemA[sortKey];
+    const valueB = itemB[sortKey];
+
+    if (valueA === undefined || valueB === undefined) return 0;
+
+    if (typeof valueA === "string") {
+      return sortDirection * valueA.localeCompare(valueB);
+    }
+
+    return sortDirection * (valueA - valueB);
+  });
+}
+
+function paginateItems(data, paginationOptions) {
+  const pageSize = Math.min(paginationOptions?.pageSize || 10, 50);
+  const pageNumber = paginationOptions?.pageNumber || 0;
+  const startIndex = pageNumber * pageSize;
+
+  return data.slice(startIndex, startIndex + pageSize);
+}
+
+const schemaDefinition = graphqlQueryLang`
+  type SystemUser {
+    userId: ID!
+    userEmail: String!
   }
 
-  type Course {
-    id: ID!
-    title: String!
-    code: String!
-    credits: Int!
-    instructor: String!
-    students: [Student!]!
+  type AuthenticationResponse {
+    authToken: String!
+    systemUser: SystemUser!
+  }
+
+  type Learner {
+    learnerId: ID!
+    fullName: String!
+    contactEmail: String!
+    age: Int!
+    fieldOfStudy: String
+    enrolledSubjects: [Subject!]!
+    subjectCount: Int!
+  }
+
+  type Subject {
+    subjectId: ID!
+    subjectName: String!
+    subjectIdentifier: String!
+    creditHours: Int!
+    educator: String!
+    registeredLearners: [Learner!]!
+    learnerCount: Int!
+  }
+
+  input LearnerModificationInput {
+    fullName: String
+    contactEmail: String
+    age: Int
+    fieldOfStudy: String
+  }
+
+  input SubjectModificationInput {
+    subjectName: String
+    subjectIdentifier: String
+    creditHours: Int
+    educator: String
+  }
+
+  input QueryOptions {
+    pageSize: Int
+    pageNumber: Int
+    sortKey: String
+    sortDirection: String
+  }
+
+  input LearnerFilterCriteria {
+    fieldOfStudy: String
+    fullNameContains: String
+    emailContains: String
+    minAge: Int
+    maxAge: Int
+  }
+
+  input SubjectFilterCriteria {
+    codeStartsWith: String
+    subjectNameContains: String
+    educator: String
+    minCredits: Int
+    maxCredits: Int
   }
 
   type Query {
-    getAllStudents: [Student!]!
-    getStudent(id: ID!): Student
-    getAllCourses: [Course!]!
-    getCourse(id: ID!): Course
-    searchStudentsByMajor(major: String!): [Student!]!
+    fetchAllLearners(criteria: LearnerFilterCriteria, options: QueryOptions): [Learner!]!
+    fetchLearnerById(learnerId: ID!): Learner
+    fetchAllSubjects(criteria: SubjectFilterCriteria, options: QueryOptions): [Subject!]!
+    fetchSubjectById(subjectId: ID!): Subject
+    findLearnersByField(field: String!): [Learner!]!
   }
 
   type Mutation {
-    addStudent(
-      name: String!
-      email: String!
+    registerUser(email: String!, pass: String!): AuthenticationResponse!
+    authenticateUser(email: String!, pass: String!): AuthenticationResponse!
+
+    registerLearner(
+      fullName: String!
+      contactEmail: String!
       age: Int!
-      major: String
-    ): Student!
-    updateStudent(
-      id: ID!
-      name: String
-      email: String
-      age: Int
-      major: String
-    ): Student
-    deleteStudent(id: ID!): Boolean!
+      fieldOfStudy: String
+    ): Learner!
+    modifyLearner(learnerId: ID!, modifications: LearnerModificationInput!): Learner!
+    removeLearner(learnerId: ID!): Boolean!
 
-    addCourse(
-      title: String!
-      code: String!
-      credits: Int!
-      instructor: String!
-    ): Course!
-    updateCourse(
-      id: ID!
-      title: String
-      code: String
-      credits: Int
-      instructor: String
-    ): Course
-    deleteCourse(id: ID!): Boolean!
+    createSubject(
+      subjectName: String!
+      subjectIdentifier: String!
+      creditHours: Int!
+      educator: String!
+    ): Subject!
+    modifySubject(subjectId: ID!, modifications: SubjectModificationInput!): Subject!
+    removeSubject(subjectId: ID!): Boolean!
 
-    enrollStudent(studentId: ID!, courseId: ID!): Student
-    unenrollStudent(studentId: ID!, courseId: ID!): Student
+    registerLearnerForSubject(learnerId: ID!, subjectId: ID!): Learner!
+    unregisterLearnerFromSubject(learnerId: ID!, subjectId: ID!): Learner!
   }
 `;
 
-const resolvers = {
+const resolverFunctions = {
   Query: {
-    getAllStudents: () => {
-      return students;
+    fetchAllLearners: (_, { criteria, options }) => {
+      let learners = learnerDatabase;
+
+      learners = filterItems(learners, criteria, "learner");
+      learners = sortItems(learners, options?.sortKey, options?.sortDirection);
+      learners = paginateItems(learners, options);
+
+      return learners;
     },
 
-    getStudent: (_, { id }) => {
-      return students.find((student) => student.id === id);
-    },
-    getAllCourses: () => {
-      return courses;
+    fetchLearnerById: (_, { learnerId }) => {
+      return learnerDatabase.find((learner) => learner.learnerId === learnerId);
     },
 
-    getCourse: (_, { id }) => {
-      return courses.find((course) => course.id === id);
+    fetchAllSubjects: (_, { criteria, options }) => {
+      let subjects = subjectDatabase;
+
+      subjects = filterItems(subjects, criteria, "subject");
+      subjects = sortItems(subjects, options?.sortKey, options?.sortDirection);
+      subjects = paginateItems(subjects, options);
+
+      return subjects;
     },
 
-    searchStudentsByMajor: (_, { major }) => {
-      return students.filter(
-        (student) =>
-          student.major &&
-          student.major.toLowerCase().includes(major.toLowerCase())
+    fetchSubjectById: (_, { subjectId }) => {
+      return subjectDatabase.find((subject) => subject.subjectId === subjectId);
+    },
+
+    findLearnersByField: (_, { field }) => {
+      return learnerDatabase.filter(
+        (learner) =>
+          learner.fieldOfStudy &&
+          learner.fieldOfStudy.toLowerCase().includes(field.toLowerCase())
       );
     },
   },
 
   Mutation: {
-    addStudent: (_, { name, email, age, major }) => {
-      const newStudent = {
-        id: String(students.length + 1),
-        name,
-        email,
+    registerUser: async (_, { email, pass }) => {
+      if (!isEmailValid(email)) {
+        throw new Error("Invalid email address.");
+      }
+      if (pass.length < 8) {
+        throw new Error("Password must be at least 8 characters long.");
+      }
+      if (!isUserEmailAvailable(email)) {
+        throw new Error("An account with this email already exists.");
+      }
+
+      const hashedPassword = await bcryptjs.hash(pass, 12);
+      const newSystemUser = {
+        userId: String(userNextId++),
+        userEmail: email.toLowerCase(),
+        passwordHash: hashedPassword,
+      };
+      userDatabase.push(newSystemUser);
+
+      const authToken = jsonwebtoken.sign(
+        { userId: newSystemUser.userId, userEmail: newSystemUser.userEmail },
+        WEB_TOKEN_SECRET,
+        { expiresIn: "1d" }
+      );
+
+      return {
+        authToken,
+        systemUser: {
+          userId: newSystemUser.userId,
+          userEmail: newSystemUser.userEmail,
+        },
+      };
+    },
+
+    authenticateUser: async (_, { email, pass }) => {
+      const systemUser = userDatabase.find(
+        (user) => user.userEmail.toLowerCase() === email.toLowerCase()
+      );
+      if (!systemUser) {
+        throw new Error("Authentication failed.");
+      }
+
+      const isPasswordCorrect = await bcryptjs.compare(
+        pass,
+        systemUser.passwordHash
+      );
+      if (!isPasswordCorrect) {
+        throw new Error("Authentication failed.");
+      }
+
+      const authToken = jsonwebtoken.sign(
+        { userId: systemUser.userId, userEmail: systemUser.userEmail },
+        WEB_TOKEN_SECRET,
+        { expiresIn: "1d" }
+      );
+
+      return {
+        authToken,
+        systemUser: {
+          userId: systemUser.userId,
+          userEmail: systemUser.userEmail,
+        },
+      };
+    },
+
+    registerLearner: (
+      _,
+      { fullName, contactEmail, age, fieldOfStudy },
+      requestContext
+    ) => {
+      ensureAuthenticated(requestContext);
+
+      if (!isEmailValid(contactEmail)) {
+        throw new Error("Invalid email address.");
+      }
+      if (!isLearnerEmailAvailable(contactEmail)) {
+        throw new Error("A learner with this email already exists.");
+      }
+      if (age < 18) {
+        throw new Error("Learner must be at least 18 years old.");
+      }
+
+      const newLearner = {
+        learnerId: String(learnerNextId++),
+        fullName,
+        contactEmail,
         age,
-        major: major || null,
+        fieldOfStudy: fieldOfStudy || "Undeclared",
       };
-      students.push(newStudent);
-      enrollments[newStudent.id] = [];
-      return newStudent;
+      learnerDatabase.push(newLearner);
+      registrationDatabase[newLearner.learnerId] = [];
+      return newLearner;
     },
 
-    updateStudent: (_, { id, name, email, age, major }) => {
-      const studentIndex = students.findIndex((student) => student.id === id);
-      if (studentIndex === -1) return null;
+    modifyLearner: (_, { learnerId, modifications }, requestContext) => {
+      ensureAuthenticated(requestContext);
 
-      const student = students[studentIndex];
+      const learner = learnerDatabase.find((l) => l.learnerId === learnerId);
+      if (!learner) {
+        throw new Error("Learner not found.");
+      }
 
-      if (name !== undefined) student.name = name;
-      if (email !== undefined) student.email = email;
-      if (age !== undefined) student.age = age;
-      if (major !== undefined) student.major = major;
+      if (modifications.contactEmail !== undefined) {
+        if (!isEmailValid(modifications.contactEmail)) {
+          throw new Error("Invalid email address.");
+        }
+        if (!isLearnerEmailAvailable(modifications.contactEmail, learnerId)) {
+          throw new Error("A learner with this email already exists.");
+        }
+        learner.contactEmail = modifications.contactEmail;
+      }
 
-      students[studentIndex] = student;
-      return student;
+      if (modifications.age !== undefined) {
+        if (modifications.age < 18) {
+          throw new Error("Learner must be at least 18 years old.");
+        }
+        learner.age = modifications.age;
+      }
+
+      if (modifications.fullName !== undefined)
+        learner.fullName = modifications.fullName;
+      if (modifications.fieldOfStudy !== undefined)
+        learner.fieldOfStudy = modifications.fieldOfStudy;
+
+      return learner;
     },
 
-    deleteStudent: (_, { id }) => {
-      const initialLength = students.length;
-      students = students.filter((student) => student.id !== id);
+    removeLearner: (_, { learnerId }, requestContext) => {
+      ensureAuthenticated(requestContext);
 
-      delete enrollments[id];
+      const initialCount = learnerDatabase.length;
+      learnerDatabase = learnerDatabase.filter(
+        (learner) => learner.learnerId !== learnerId
+      );
+      delete registrationDatabase[learnerId];
 
-      return students.length < initialLength;
+      return learnerDatabase.length < initialCount;
     },
 
-    addCourse: (_, { title, code, credits, instructor }) => {
-      const newCourse = {
-        id: String(courses.length + 1),
-        title,
-        code,
-        credits,
-        instructor,
+    createSubject: (
+      _,
+      { subjectName, subjectIdentifier, creditHours, educator },
+      requestContext
+    ) => {
+      ensureAuthenticated(requestContext);
+
+      if (!isSubjectCodeAvailable(subjectIdentifier)) {
+        throw new Error("A subject with this code already exists.");
+      }
+      if (creditHours < 1 || creditHours > 5) {
+        throw new Error("Credit hours must be between 1 and 5.");
+      }
+
+      const newSubject = {
+        subjectId: String(subjectNextId++),
+        subjectName,
+        subjectIdentifier,
+        creditHours,
+        educator,
       };
-      courses.push(newCourse);
-      return newCourse;
+      subjectDatabase.push(newSubject);
+      return newSubject;
     },
 
-    updateCourse: (_, { id, title, code, credits, instructor }) => {
-      const courseIndex = courses.findIndex((course) => course.id === id);
-      if (courseIndex === -1) return null;
+    modifySubject: (_, { subjectId, modifications }, requestContext) => {
+      ensureAuthenticated(requestContext);
 
-      const course = courses[courseIndex];
+      const subject = subjectDatabase.find((s) => s.subjectId === subjectId);
+      if (!subject) {
+        throw new Error("Subject not found.");
+      }
 
-      if (title !== undefined) course.title = title;
-      if (code !== undefined) course.code = code;
-      if (credits !== undefined) course.credits = credits;
-      if (instructor !== undefined) course.instructor = instructor;
+      if (modifications.subjectIdentifier !== undefined) {
+        if (
+          !isSubjectCodeAvailable(modifications.subjectIdentifier, subjectId)
+        ) {
+          throw new Error("A subject with this code already exists.");
+        }
+        subject.subjectIdentifier = modifications.subjectIdentifier;
+      }
 
-      courses[courseIndex] = course;
-      return course;
+      if (modifications.creditHours !== undefined) {
+        if (modifications.creditHours < 1 || modifications.creditHours > 5) {
+          throw new Error("Credit hours must be between 1 and 5.");
+        }
+        subject.creditHours = modifications.creditHours;
+      }
+
+      if (modifications.subjectName !== undefined)
+        subject.subjectName = modifications.subjectName;
+      if (modifications.educator !== undefined)
+        subject.educator = modifications.educator;
+
+      return subject;
     },
 
-    deleteCourse: (_, { id }) => {
-      const initialLength = courses.length;
-      courses = courses.filter((course) => course.id !== id);
+    removeSubject: (_, { subjectId }, requestContext) => {
+      ensureAuthenticated(requestContext);
 
-      Object.keys(enrollments).forEach((studentId) => {
-        enrollments[studentId] = enrollments[studentId].filter(
-          (courseId) => courseId !== id
-        );
+      const initialCount = subjectDatabase.length;
+      subjectDatabase = subjectDatabase.filter(
+        (subject) => subject.subjectId !== subjectId
+      );
+
+      Object.keys(registrationDatabase).forEach((learnerId) => {
+        registrationDatabase[learnerId] = registrationDatabase[
+          learnerId
+        ].filter((regSubjectId) => regSubjectId !== subjectId);
       });
 
-      return courses.length < initialLength;
+      return subjectDatabase.length < initialCount;
     },
 
-    enrollStudent: (_, { studentId, courseId }) => {
-      const student = students.find((s) => s.id === studentId);
-      const course = courses.find((c) => c.id === courseId);
+    registerLearnerForSubject: (
+      _,
+      { learnerId, subjectId },
+      requestContext
+    ) => {
+      ensureAuthenticated(requestContext);
 
-      if (!student || !course) return null;
+      const learner = learnerDatabase.find((l) => l.learnerId === learnerId);
+      const subject = subjectDatabase.find((s) => s.subjectId === subjectId);
 
-      if (!enrollments[studentId]) {
-        enrollments[studentId] = [];
+      if (!learner) {
+        throw new Error("Learner not found.");
+      }
+      if (!subject) {
+        throw new Error("Subject not found.");
       }
 
-      if (!enrollments[studentId].includes(courseId)) {
-        enrollments[studentId].push(courseId);
+      if (!registrationDatabase[learnerId]) {
+        registrationDatabase[learnerId] = [];
       }
 
-      return student;
+      if (!registrationDatabase[learnerId].includes(subjectId)) {
+        registrationDatabase[learnerId].push(subjectId);
+      }
+
+      return learner;
     },
 
-    unenrollStudent: (_, { studentId, courseId }) => {
-      const student = students.find((s) => s.id === studentId);
+    unregisterLearnerFromSubject: (
+      _,
+      { learnerId, subjectId },
+      requestContext
+    ) => {
+      ensureAuthenticated(requestContext);
 
-      if (!student || !enrollments[studentId]) return null;
+      const learner = learnerDatabase.find((l) => l.learnerId === learnerId);
+      if (!learner) {
+        throw new Error("Learner not found.");
+      }
 
-      enrollments[studentId] = enrollments[studentId].filter(
-        (id) => id !== courseId
-      );
+      if (registrationDatabase[learnerId]) {
+        registrationDatabase[learnerId] = registrationDatabase[
+          learnerId
+        ].filter((regSubjectId) => regSubjectId !== subjectId);
+      }
 
-      return student;
+      return learner;
     },
   },
 
-  Student: {
-    courses: (parent) => {
-      const studentCourseIds = enrollments[parent.id] || [];
-      return courses.filter((course) => studentCourseIds.includes(course.id));
+  Learner: {
+    enrolledSubjects: (learner) => {
+      const learnerSubjectIds = registrationDatabase[learner.learnerId] || [];
+      return subjectDatabase.filter((subject) =>
+        learnerSubjectIds.includes(subject.subjectId)
+      );
+    },
+
+    subjectCount: (learner) => {
+      const learnerSubjectIds = registrationDatabase[learner.learnerId] || [];
+      return learnerSubjectIds.length;
     },
   },
 
-  Course: {
-    students: (parent) => {
-      const enrolledStudentIds = Object.keys(enrollments).filter((studentId) =>
-        enrollments[studentId].includes(parent.id)
+  Subject: {
+    registeredLearners: (subject) => {
+      const registeredLearnerIds = Object.keys(registrationDatabase).filter(
+        (learnerId) =>
+          registrationDatabase[learnerId].includes(subject.subjectId)
       );
-      return students.filter((student) =>
-        enrolledStudentIds.includes(student.id)
+      return learnerDatabase.filter((learner) =>
+        registeredLearnerIds.includes(learner.learnerId)
       );
+    },
+
+    learnerCount: (subject) => {
+      const registeredLearnerIds = Object.keys(registrationDatabase).filter(
+        (learnerId) =>
+          registrationDatabase[learnerId].includes(subject.subjectId)
+      );
+      return registeredLearnerIds.length;
     },
   },
 };
 
-async function start() {
-  const app = express();
-  const server = new ApolloServer({
-    typeDefs: typeDefs,
-    resolvers: resolvers,
+async function initializeServer() {
+  const webApp = expressFramework();
+  const apolloInstance = new Apollo({
+    typeDefs: schemaDefinition,
+    resolvers: resolverFunctions,
+    context: ({ req }) => {
+      const authorizationHeader = req.headers.authorization || "";
+
+      if (authorizationHeader.startsWith("Bearer ")) {
+        const token = authorizationHeader.substring(7);
+
+        try {
+          const decodedToken = jsonwebtoken.verify(token, WEB_TOKEN_SECRET);
+          const systemUser = userDatabase.find(
+            (user) => user.userId === decodedToken.userId
+          );
+
+          return {
+            currentUser: systemUser
+              ? { userId: systemUser.userId, userEmail: systemUser.userEmail }
+              : null,
+          };
+        } catch (error) {
+          return { currentUser: null };
+        }
+      }
+
+      return { currentUser: null };
+    },
   });
 
-  await server.start();
-  server.applyMiddleware({ app, path: "/graphql" });
-  app.listen(5000, () => {
-    console.log(" Server ready at http://localhost:5000/graphql");
-    console.log(" Student Management System API");
+  await apolloInstance.start();
+  apolloInstance.applyMiddleware({ app: webApp, path: "/api" });
+
+  webApp.get("/explorer", graphqlPlayground({ endpoint: "/api" }));
+
+  webApp.listen(5000, () => {
+    console.log("GraphQL server is running at http://localhost:5000/api");
+    console.log(
+      "GraphQL Playground is available at http://localhost:5000/explorer"
+    );
   });
 }
-start();
+
+initializeServer();
